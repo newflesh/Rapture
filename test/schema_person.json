@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "required": ["name", "age", "email"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "age": { "type": "integer", "minimum": 0, "maximum": 150 },
+    "email": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" },
+    "role": { "type": "string", "enum": ["admin", "user", "guest"] },
+    "tags": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

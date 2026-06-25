@@ -1,0 +1,7 @@
+{
+  "name": "Ada Lovelace",
+  "age": 36,
+  "email": "ada@example.com",
+  "role": "admin",
+  "tags": ["math", "computing"]
+}
