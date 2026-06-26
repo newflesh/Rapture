@@ -1,0 +1,51 @@
+routes:
+  - name: getCustomer
+    method: GET
+    path: /api/customers/:id
+    library: CUSTLIB
+    program: CUSTINQ
+    parameters:
+      - name: customerId
+        source: path
+        field: id
+        type: DECIMAL
+        length: 9
+        decimals: 0
+        direction: IN
+      - name: customerName
+        type: CHAR
+        length: 20
+        direction: OUT
+        as: name
+      - name: balance
+        type: DECIMAL
+        length: 11
+        decimals: 2
+        direction: OUT
+
+  - name: createOrder
+    method: POST
+    path: /api/orders
+    library: ORDLIB
+    program: ORDCRT
+    successStatus: 201
+    parameters:
+      - name: customerId
+        source: body
+        type: DECIMAL
+        length: 9
+        decimals: 0
+        direction: IN
+      - name: qty
+        source: body
+        type: INTEGER
+        direction: IN
+      - name: orderId
+        type: DECIMAL
+        length: 9
+        decimals: 0
+        direction: OUT
+      - name: status
+        type: CHAR
+        length: 10
+        direction: OUT

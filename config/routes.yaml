@@ -1,0 +1,89 @@
+# Declarative routing table: maps an HTTP method + path to the RPG program
+# that should handle it, and describes how request data becomes call
+# parameters (and how the program's OUT parameters become the JSON response).
+#
+# Each route is invoked as: CALL <library>/<procedure ?? program> (parameters...)
+# via a Db2-for-i stored procedure wrapping the RPG program call.
+
+routes:
+  # GET /api/customers/12345 -> CALL CUSTLIB/CUSTINQ(12345, :name, :balance, :found)
+  - name: getCustomer
+    method: GET
+    path: /api/customers/:id
+    library: CUSTLIB
+    program: CUSTINQ
+    parameters:
+      - name: customerId
+        source: path
+        field: id
+        type: DECIMAL
+        length: 9
+        decimals: 0
+        direction: IN
+      - name: customerName
+        type: CHAR
+        length: 50
+        direction: OUT
+        as: name
+      - name: balance
+        type: DECIMAL
+        length: 11
+        decimals: 2
+        direction: OUT
+      - name: found
+        type: INDICATOR
+        direction: OUT
+
+  # POST /api/orders { "customerId": 12345, "sku": "WIDGET-1", "qty": 3 }
+  # -> CALL ORDLIB/ORDCRT(12345, 'WIDGET-1', 3, :orderId, :status)
+  - name: createOrder
+    method: POST
+    path: /api/orders
+    library: ORDLIB
+    program: ORDCRT
+    successStatus: 201
+    parameters:
+      - name: customerId
+        source: body
+        type: DECIMAL
+        length: 9
+        decimals: 0
+        direction: IN
+      - name: sku
+        source: body
+        type: CHAR
+        length: 15
+        direction: IN
+      - name: qty
+        source: body
+        type: INTEGER
+        direction: IN
+        required: true
+      - name: orderId
+        type: DECIMAL
+        length: 9
+        decimals: 0
+        direction: OUT
+      - name: status
+        type: CHAR
+        length: 10
+        direction: OUT
+
+  # DELETE /api/orders/98765 -> CALL ORDLIB/ORDCAN(98765, :status)
+  - name: cancelOrder
+    method: DELETE
+    path: /api/orders/:id
+    library: ORDLIB
+    program: ORDCAN
+    parameters:
+      - name: orderId
+        source: path
+        field: id
+        type: DECIMAL
+        length: 9
+        decimals: 0
+        direction: IN
+      - name: status
+        type: CHAR
+        length: 10
+        direction: OUT
