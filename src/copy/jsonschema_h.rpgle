@@ -12,11 +12,11 @@
 // uniqueItems, multipleOf.
 //=====================================================================
 
-/copy 'src/copy/jsonutil_h.rpgle'
+/copy 'src/copy/jsonparser_h.rpgle'
 
 dcl-c JS_MAXERRORS 200;   // most violations reported per validation run
 dcl-c JS_MAXMSG    256;
-dcl-c JS_MAXPATH   JSON_MAXPATH;
+dcl-c JS_MAXPATH   1024;
 
 dcl-ds jsError_t qualified template;
   instancePath varchar(JS_MAXPATH);
@@ -30,7 +30,10 @@ dcl-ds jsResult_t qualified template;
 end-ds;
 
 //---------------------------------------------------------------------
-// jsonSchemaValidate - validate dataDoc against schemaDoc.
+// jsonSchemaValidate - validate dataDoc against schemaDoc. Both are
+// parsed from scratch by the hand-rolled parser in jsonparser.sqlrpgle
+// (jsonParse) - if either fails to parse as JSON, that is reported as
+// a single violation at "$" rather than attempting to validate.
 // Returns *on if valid, *off otherwise; result.errors lists every
 // violation found (up to JS_MAXERRORS), each with the instance path
 // (e.g. $.address.zip) where the violation occurred.

@@ -1,25 +1,27 @@
 **free
 //=====================================================================
 // JSONSCHEMA - recursive-descent JSON Schema validator (core subset).
-// Walks the schema document; for every keyword present, checks the
-// corresponding part of the data document via jsonutil's generic
-// JSON access procedures. See jsonschema_h.rpgle for keyword coverage.
+//
+// Both documents are parsed once, up front, by the hand-rolled parser
+// in jsonparser.sqlrpgle into in-memory node trees; validation walks
+// schema nodes against data nodes directly (no re-parsing per access,
+// unlike a path-string-based approach).
 //=====================================================================
 ctl-opt nomain;
 
 /copy 'src/copy/jsonschema_h.rpgle'
 
-dcl-s gSchemaDoc varchar(JSON_MAXDOC:4) ccsid(*utf8) static;
-dcl-s gDataDoc   varchar(JSON_MAXDOC:4) ccsid(*utf8) static;
+dcl-ds gSchema likeds(jsonDoc_t) static;
+dcl-ds gData   likeds(jsonDoc_t) static;
 dcl-ds gResult likeds(jsResult_t) static;
 
 //---------------------------------------------------------------------
 // forward prototypes (mutual/recursive calls within this module)
 //---------------------------------------------------------------------
 dcl-pr jsValidateNode ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsAddError;
@@ -28,57 +30,57 @@ dcl-pr jsAddError;
 end-pr;
 
 dcl-pr jsCheckType ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsTypeMatches ind;
   expected varchar(20) const;
   actual   varchar(10) const;
-  dataPath varchar(JSON_MAXPATH) const;
+  dataIdx  int(10) const;
 end-pr;
 
 dcl-pr jsCheckEnum ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsCheckStringConstraints ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsCheckNumberConstraints ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsCheckArrayConstraints ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsCheckRequired ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsCheckProperties ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 dcl-pr jsCheckItems ind;
-  schemaPath varchar(JSON_MAXPATH) const;
-  dataPath   varchar(JSON_MAXPATH) const;
-  errPath    varchar(JS_MAXPATH) const;
+  schemaIdx int(10) const;
+  dataIdx   int(10) const;
+  errPath   varchar(JS_MAXPATH) const;
 end-pr;
 
 //=====================================================================
@@ -89,11 +91,23 @@ dcl-proc jsonSchemaValidate export;
     result    likeds(jsResult_t);
   end-pi;
 
-  gSchemaDoc       = schemaDoc;
-  gDataDoc         = dataDoc;
   gResult.errCount = 0;
 
-  jsValidateNode(JSON_ROOT : JSON_ROOT : '$');
+  if not jsonParse(schemaDoc:gSchema);
+    jsAddError('$' : 'schema is not valid JSON: ' + %trim(gSchema.errMsg));
+    gResult.valid = *off;
+    result = gResult;
+    return result.valid;
+  endif;
+
+  if not jsonParse(dataDoc:gData);
+    jsAddError('$' : 'data is not valid JSON: ' + %trim(gData.errMsg));
+    gResult.valid = *off;
+    result = gResult;
+    return result.valid;
+  endif;
+
+  jsValidateNode(gSchema.rootIdx : gData.rootIdx : '$');
 
   gResult.valid = (gResult.errCount = 0);
   result = gResult;
@@ -115,31 +129,31 @@ dcl-proc jsAddError;
 end-proc;
 
 //---------------------------------------------------------------------
-// jsValidateNode - validate the value at dataPath against the
-// (sub)schema at schemaPath. Caller guarantees dataPath exists;
-// JSON Schema's "properties"/"items" only validate values that are
-// actually present, so absence is handled by the caller (required
-// for missing properties, simply not iterating absent array slots).
+// jsValidateNode - validate the data node against the schema node.
+// Caller guarantees dataIdx exists; "properties"/"items" only
+// validate values that are actually present, so absence is handled
+// by the caller (required for missing properties, simply not
+// iterating absent array slots).
 //---------------------------------------------------------------------
 dcl-proc jsValidateNode;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
   dcl-s errsBefore int(10);
 
   errsBefore = gResult.errCount;
 
-  jsCheckType(schemaPath : dataPath : errPath);
-  jsCheckEnum(schemaPath : dataPath : errPath);
-  jsCheckStringConstraints(schemaPath : dataPath : errPath);
-  jsCheckNumberConstraints(schemaPath : dataPath : errPath);
-  jsCheckArrayConstraints(schemaPath : dataPath : errPath);
-  jsCheckRequired(schemaPath : dataPath : errPath);
-  jsCheckProperties(schemaPath : dataPath : errPath);
-  jsCheckItems(schemaPath : dataPath : errPath);
+  jsCheckType(schemaIdx : dataIdx : errPath);
+  jsCheckEnum(schemaIdx : dataIdx : errPath);
+  jsCheckStringConstraints(schemaIdx : dataIdx : errPath);
+  jsCheckNumberConstraints(schemaIdx : dataIdx : errPath);
+  jsCheckArrayConstraints(schemaIdx : dataIdx : errPath);
+  jsCheckRequired(schemaIdx : dataIdx : errPath);
+  jsCheckProperties(schemaIdx : dataIdx : errPath);
+  jsCheckItems(schemaIdx : dataIdx : errPath);
 
   return (gResult.errCount = errsBefore);
 end-proc;
@@ -149,12 +163,13 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckType;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
-  dcl-s typePath varchar(JSON_MAXPATH);
+  dcl-s typeIdx  int(10);
+  dcl-s itemIdx  int(10);
   dcl-s actual   varchar(10);
   dcl-s expected varchar(20);
   dcl-s list     varchar(200);
@@ -162,21 +177,21 @@ dcl-proc jsCheckType;
   dcl-s i        int(10);
   dcl-s n        int(10);
 
-  typePath = jsonPathSeg(schemaPath:'type');
-
-  if not jsonExists(gSchemaDoc:typePath);
+  typeIdx = jsonNodeObjectGet(gSchema:schemaIdx:'type');
+  if typeIdx = JSON_NONODE;
     return *on;     // no "type" constraint
   endif;
 
-  actual = jsonType(gDataDoc:dataPath);
+  actual = jsonNodeType(gData:dataIdx);
 
-  if jsonType(gSchemaDoc:typePath) = JSONTYPE_ARRAY;
-    n    = jsonArrayCount(gSchemaDoc:typePath);
+  if jsonNodeType(gSchema:typeIdx) = JSONTYPE_ARRAY;
+    n    = jsonNodeArrayCount(gSchema:typeIdx);
     any  = *off;
     list = '';
     for i = 0 to n - 1;
-      expected = jsonGetString(gSchemaDoc:jsonPathIdx(typePath:i));
-      if jsTypeMatches(expected:actual:dataPath);
+      itemIdx  = jsonNodeArrayItem(gSchema:typeIdx:i);
+      expected = jsonNodeGetString(gSchema:itemIdx);
+      if jsTypeMatches(expected:actual:dataIdx);
         any = *on;
       endif;
       list = %trimr(list) + ' ' + %trim(expected);
@@ -187,8 +202,8 @@ dcl-proc jsCheckType;
       return *off;
     endif;
   else;
-    expected = jsonGetString(gSchemaDoc:typePath);
-    if not jsTypeMatches(expected:actual:dataPath);
+    expected = jsonNodeGetString(gSchema:typeIdx);
+    if not jsTypeMatches(expected:actual:dataIdx);
       jsAddError(errPath : 'must be of type ' + %trim(expected)
                             + ' but found ' + %trim(actual));
       return *off;
@@ -202,11 +217,11 @@ dcl-proc jsTypeMatches;
   dcl-pi *n ind;
     expected varchar(20) const;
     actual   varchar(10) const;
-    dataPath varchar(JSON_MAXPATH) const;
+    dataIdx  int(10) const;
   end-pi;
 
   if %trim(expected) = 'integer';
-    return (actual = JSONTYPE_NUMBER and jsonIsIntegerValue(gDataDoc:dataPath));
+    return (actual = JSONTYPE_NUMBER and jsonNodeIsInteger(gData:dataIdx));
   endif;
 
   return (%trim(expected) = %trim(actual));
@@ -218,40 +233,39 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckEnum;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
-  dcl-s enumPath   varchar(JSON_MAXPATH);
-  dcl-s candPath   varchar(JSON_MAXPATH);
+  dcl-s enumIdx    int(10);
+  dcl-s candIdx    int(10);
   dcl-s actualType varchar(10);
   dcl-s candType   varchar(10);
   dcl-s found      ind;
   dcl-s i int(10);
   dcl-s n int(10);
 
-  enumPath = jsonPathSeg(schemaPath:'enum');
-
-  if not jsonExists(gSchemaDoc:enumPath);
+  enumIdx = jsonNodeObjectGet(gSchema:schemaIdx:'enum');
+  if enumIdx = JSON_NONODE;
     return *on;
   endif;
 
-  n          = jsonArrayCount(gSchemaDoc:enumPath);
-  actualType = jsonType(gDataDoc:dataPath);
+  n          = jsonNodeArrayCount(gSchema:enumIdx);
+  actualType = jsonNodeType(gData:dataIdx);
   found      = *off;
 
   for i = 0 to n - 1;
-    candPath = jsonPathIdx(enumPath:i);
-    candType = jsonType(gSchemaDoc:candPath);
+    candIdx  = jsonNodeArrayItem(gSchema:enumIdx:i);
+    candType = jsonNodeType(gSchema:candIdx);
     if candType = actualType;
       select;
         when actualType = JSONTYPE_STRING or actualType = JSONTYPE_BOOLEAN;
-          if jsonGetString(gSchemaDoc:candPath) = jsonGetString(gDataDoc:dataPath);
+          if jsonNodeGetString(gSchema:candIdx) = jsonNodeGetString(gData:dataIdx);
             found = *on;
           endif;
         when actualType = JSONTYPE_NUMBER;
-          if jsonGetNumber(gSchemaDoc:candPath) = jsonGetNumber(gDataDoc:dataPath);
+          if jsonNodeGetNumber(gSchema:candIdx) = jsonNodeGetNumber(gData:dataIdx);
             found = *on;
           endif;
         when actualType = JSONTYPE_NULL;
@@ -277,9 +291,9 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckStringConstraints;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
   dcl-s ok      ind;
@@ -287,33 +301,37 @@ dcl-proc jsCheckStringConstraints;
   dcl-s slen    int(10);
   dcl-s bound   int(10);
   dcl-s pattern varchar(JSON_MAXVAL);
+  dcl-s boundIdx int(10);
 
-  if jsonType(gDataDoc:dataPath) <> JSONTYPE_STRING;
+  if jsonNodeType(gData:dataIdx) <> JSONTYPE_STRING;
     return *on;
   endif;
 
   ok   = *on;
-  sval = jsonGetString(gDataDoc:dataPath);
+  sval = jsonNodeGetString(gData:dataIdx);
   slen = %len(sval);
 
-  if jsonExists(gSchemaDoc:jsonPathSeg(schemaPath:'minLength'));
-    bound = %int(jsonGetNumber(gSchemaDoc:jsonPathSeg(schemaPath:'minLength')));
+  boundIdx = jsonNodeObjectGet(gSchema:schemaIdx:'minLength');
+  if boundIdx <> JSON_NONODE;
+    bound = %int(jsonNodeGetNumber(gSchema:boundIdx));
     if slen < bound;
       jsAddError(errPath : 'length must be >= ' + %char(bound));
       ok = *off;
     endif;
   endif;
 
-  if jsonExists(gSchemaDoc:jsonPathSeg(schemaPath:'maxLength'));
-    bound = %int(jsonGetNumber(gSchemaDoc:jsonPathSeg(schemaPath:'maxLength')));
+  boundIdx = jsonNodeObjectGet(gSchema:schemaIdx:'maxLength');
+  if boundIdx <> JSON_NONODE;
+    bound = %int(jsonNodeGetNumber(gSchema:boundIdx));
     if slen > bound;
       jsAddError(errPath : 'length must be <= ' + %char(bound));
       ok = *off;
     endif;
   endif;
 
-  if jsonExists(gSchemaDoc:jsonPathSeg(schemaPath:'pattern'));
-    pattern = jsonGetString(gSchemaDoc:jsonPathSeg(schemaPath:'pattern'));
+  boundIdx = jsonNodeObjectGet(gSchema:schemaIdx:'pattern');
+  if boundIdx <> JSON_NONODE;
+    pattern = jsonNodeGetString(gSchema:boundIdx);
     if not jsonRegexMatch(sval:pattern);
       jsAddError(errPath : 'must match pattern ' + %trim(pattern));
       ok = *off;
@@ -328,32 +346,35 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckNumberConstraints;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
-  dcl-s ok    ind;
-  dcl-s nval  packed(31:10);
-  dcl-s bound packed(31:10);
+  dcl-s ok       ind;
+  dcl-s nval     packed(31:10);
+  dcl-s bound    packed(31:10);
+  dcl-s boundIdx int(10);
 
-  if jsonType(gDataDoc:dataPath) <> JSONTYPE_NUMBER;
+  if jsonNodeType(gData:dataIdx) <> JSONTYPE_NUMBER;
     return *on;
   endif;
 
   ok   = *on;
-  nval = jsonGetNumber(gDataDoc:dataPath);
+  nval = jsonNodeGetNumber(gData:dataIdx);
 
-  if jsonExists(gSchemaDoc:jsonPathSeg(schemaPath:'minimum'));
-    bound = jsonGetNumber(gSchemaDoc:jsonPathSeg(schemaPath:'minimum'));
+  boundIdx = jsonNodeObjectGet(gSchema:schemaIdx:'minimum');
+  if boundIdx <> JSON_NONODE;
+    bound = jsonNodeGetNumber(gSchema:boundIdx);
     if nval < bound;
       jsAddError(errPath : 'must be >= ' + %trim(%char(bound)));
       ok = *off;
     endif;
   endif;
 
-  if jsonExists(gSchemaDoc:jsonPathSeg(schemaPath:'maximum'));
-    bound = jsonGetNumber(gSchemaDoc:jsonPathSeg(schemaPath:'maximum'));
+  boundIdx = jsonNodeObjectGet(gSchema:schemaIdx:'maximum');
+  if boundIdx <> JSON_NONODE;
+    bound = jsonNodeGetNumber(gSchema:boundIdx);
     if nval > bound;
       jsAddError(errPath : 'must be <= ' + %trim(%char(bound)));
       ok = *off;
@@ -368,32 +389,35 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckArrayConstraints;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
-  dcl-s ok    ind;
-  dcl-s cnt   int(10);
-  dcl-s bound int(10);
+  dcl-s ok       ind;
+  dcl-s cnt      int(10);
+  dcl-s bound    int(10);
+  dcl-s boundIdx int(10);
 
-  if jsonType(gDataDoc:dataPath) <> JSONTYPE_ARRAY;
+  if jsonNodeType(gData:dataIdx) <> JSONTYPE_ARRAY;
     return *on;
   endif;
 
   ok  = *on;
-  cnt = jsonArrayCount(gDataDoc:dataPath);
+  cnt = jsonNodeArrayCount(gData:dataIdx);
 
-  if jsonExists(gSchemaDoc:jsonPathSeg(schemaPath:'minItems'));
-    bound = %int(jsonGetNumber(gSchemaDoc:jsonPathSeg(schemaPath:'minItems')));
+  boundIdx = jsonNodeObjectGet(gSchema:schemaIdx:'minItems');
+  if boundIdx <> JSON_NONODE;
+    bound = %int(jsonNodeGetNumber(gSchema:boundIdx));
     if cnt < bound;
       jsAddError(errPath : 'must contain >= ' + %char(bound) + ' items');
       ok = *off;
     endif;
   endif;
 
-  if jsonExists(gSchemaDoc:jsonPathSeg(schemaPath:'maxItems'));
-    bound = %int(jsonGetNumber(gSchemaDoc:jsonPathSeg(schemaPath:'maxItems')));
+  boundIdx = jsonNodeObjectGet(gSchema:schemaIdx:'maxItems');
+  if boundIdx <> JSON_NONODE;
+    bound = %int(jsonNodeGetNumber(gSchema:boundIdx));
     if cnt > bound;
       jsAddError(errPath : 'must contain <= ' + %char(bound) + ' items');
       ok = *off;
@@ -408,33 +432,34 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckRequired;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
-  dcl-s reqPath varchar(JSON_MAXPATH);
+  dcl-s reqIdx  int(10);
+  dcl-s nameIdx int(10);
   dcl-s name    varchar(JSON_MAXKEYLEN);
   dcl-s ok      ind;
   dcl-s i int(10);
   dcl-s n int(10);
 
-  reqPath = jsonPathSeg(schemaPath:'required');
-
-  if not jsonExists(gSchemaDoc:reqPath);
+  reqIdx = jsonNodeObjectGet(gSchema:schemaIdx:'required');
+  if reqIdx = JSON_NONODE;
     return *on;
   endif;
 
-  if jsonType(gDataDoc:dataPath) <> JSONTYPE_OBJECT;
+  if jsonNodeType(gData:dataIdx) <> JSONTYPE_OBJECT;
     return *on;    // "required" only meaningful for objects
   endif;
 
   ok = *on;
-  n  = jsonArrayCount(gSchemaDoc:reqPath);
+  n  = jsonNodeArrayCount(gSchema:reqIdx);
 
   for i = 0 to n - 1;
-    name = jsonGetString(gSchemaDoc:jsonPathIdx(reqPath:i));
-    if not jsonExists(gDataDoc:jsonPathSeg(dataPath:name));
+    nameIdx = jsonNodeArrayItem(gSchema:reqIdx:i);
+    name    = jsonNodeGetString(gSchema:nameIdx);
+    if not jsonNodeObjectHas(gData:dataIdx:name);
       jsAddError(errPath : 'missing required property "' + %trim(name) + '"');
       ok = *off;
     endif;
@@ -450,38 +475,37 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckProperties;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
-  dcl-s propsPath varchar(JSON_MAXPATH);
+  dcl-s propsIdx int(10);
   dcl-ds keys likeds(jsonKeyList_t);
   dcl-s ok ind;
-  dcl-s childDataPath   varchar(JSON_MAXPATH);
-  dcl-s childSchemaPath varchar(JSON_MAXPATH);
-  dcl-s childErrPath    varchar(JS_MAXPATH);
+  dcl-s childDataIdx   int(10);
+  dcl-s childSchemaIdx int(10);
+  dcl-s childErrPath   varchar(JS_MAXPATH);
   dcl-s i int(10);
 
-  propsPath = jsonPathSeg(schemaPath:'properties');
-
-  if not jsonExists(gSchemaDoc:propsPath);
+  propsIdx = jsonNodeObjectGet(gSchema:schemaIdx:'properties');
+  if propsIdx = JSON_NONODE;
     return *on;
   endif;
 
-  if jsonType(gDataDoc:dataPath) <> JSONTYPE_OBJECT;
+  if jsonNodeType(gData:dataIdx) <> JSONTYPE_OBJECT;
     return *on;    // "properties" only meaningful for objects
   endif;
 
   ok = *on;
-  jsonObjectKeys(gSchemaDoc:propsPath:keys);
+  jsonNodeObjectKeys(gSchema:propsIdx:keys);
 
   for i = 1 to keys.count;
-    childDataPath = jsonPathSeg(dataPath:keys.name(i));
-    if jsonExists(gDataDoc:childDataPath);
-      childSchemaPath = jsonPathSeg(propsPath:keys.name(i));
-      childErrPath    = %trimr(errPath) + '.' + %trim(keys.name(i));
-      if not jsValidateNode(childSchemaPath:childDataPath:childErrPath);
+    childDataIdx = jsonNodeObjectGet(gData:dataIdx:keys.name(i));
+    if childDataIdx <> JSON_NONODE;
+      childSchemaIdx = jsonNodeObjectGet(gSchema:propsIdx:keys.name(i));
+      childErrPath   = %trimr(errPath) + '.' + %trim(keys.name(i));
+      if not jsValidateNode(childSchemaIdx:childDataIdx:childErrPath);
         ok = *off;
       endif;
     endif;
@@ -496,33 +520,34 @@ end-proc;
 //---------------------------------------------------------------------
 dcl-proc jsCheckItems;
   dcl-pi *n ind;
-    schemaPath varchar(JSON_MAXPATH) const;
-    dataPath   varchar(JSON_MAXPATH) const;
-    errPath    varchar(JS_MAXPATH) const;
+    schemaIdx int(10) const;
+    dataIdx   int(10) const;
+    errPath   varchar(JS_MAXPATH) const;
   end-pi;
 
-  dcl-s itemsPath   varchar(JSON_MAXPATH);
+  dcl-s itemsIdx     int(10);
+  dcl-s childDataIdx int(10);
   dcl-s childErrPath varchar(JS_MAXPATH);
   dcl-s ok ind;
   dcl-s i int(10);
   dcl-s n int(10);
 
-  itemsPath = jsonPathSeg(schemaPath:'items');
-
-  if not jsonExists(gSchemaDoc:itemsPath);
+  itemsIdx = jsonNodeObjectGet(gSchema:schemaIdx:'items');
+  if itemsIdx = JSON_NONODE;
     return *on;
   endif;
 
-  if jsonType(gDataDoc:dataPath) <> JSONTYPE_ARRAY;
+  if jsonNodeType(gData:dataIdx) <> JSONTYPE_ARRAY;
     return *on;    // "items" only meaningful for arrays
   endif;
 
   ok = *on;
-  n  = jsonArrayCount(gDataDoc:dataPath);
+  n  = jsonNodeArrayCount(gData:dataIdx);
 
   for i = 0 to n - 1;
+    childDataIdx = jsonNodeArrayItem(gData:dataIdx:i);
     childErrPath = %trimr(errPath) + '[' + %char(i) + ']';
-    if not jsValidateNode(itemsPath:jsonPathIdx(dataPath:i):childErrPath);
+    if not jsValidateNode(itemsIdx:childDataIdx:childErrPath);
       ok = *off;
     endif;
   endfor;

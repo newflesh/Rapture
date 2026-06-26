@@ -10,31 +10,33 @@ valid, with a list of every violation found.
 
 Generic JSON handling on IBM i is usually done with Scott Klement's
 YAJL port, but that's a separate package you install yourself, and
-this project intentionally avoids that dependency. Instead it's built
-entirely on **Db2 for i's native SQL/JSON support**
-(`JSON_EXISTS`, `JSON_VALUE`, `JSON_QUERY`, `JSON_TABLE`,
-`REGEXP_LIKE`, `QSYS2.IFS_READ_UTF8`) , which ships with the base OS
-since IBM i 7.3. Nothing to download or install.
+this project intentionally avoids that dependency. It also avoids
+relying on **Db2 for i's SQL/JSON support** (`JSON_TABLE`,
+`JSON_VALUE`, etc.) for parsing - instead, `src/jsonparser.sqlrpgle`
+is a real hand-rolled recursive-descent JSON parser (RFC 8259) written
+in pure RPG. It tokenizes UTF-8 text directly into an in-memory node
+tree, with no external library and no database engine involved in
+parsing at all. The only SQL still in use is `REGEXP_LIKE`, for the
+schema's `pattern` keyword - regex matching is a separate concern from
+parsing, and reimplementing a regex engine by hand wasn't worth it.
 
-The one thing standard SQL/JSON path syntax can't do is enumerate an
-object's member names (there's no wildcard for property names the
-way `[*]` is a wildcard for array elements). Since a JSON Schema's
-own `"properties"` object has arbitrary, schema-defined keys, that
-one case is handled by a small hand-written scanner
-(`jsonObjectKeys` in `src/jsonutil.sqlrpgle`) that walks the raw text
-`JSON_QUERY` returns, tracking brace/quote depth. Everything else is
-a thin wrapper over the built-in SQL functions.
+Because parsing is hand-rolled, it's also more capable in a few ways
+a thin SQL/JSON wrapper couldn't be: custom error messages with byte
+position, `\uXXXX` escape decoding (including surrogate pairs for
+characters outside the Basic Multilingual Plane), and direct
+object-member enumeration (no need to work around SQL/JSON path
+syntax having no wildcard for property names).
 
 ## Project layout
 
 ```
 src/
   copy/
-    jsonutil_h.rpgle      prototypes/constants - generic JSON access
-    jsonschema_h.rpgle     prototypes/constants - schema validator
-  jsonutil.sqlrpgle        generic JSON access, built on SQL/JSON
-  jsonschema.sqlrpgle       the validator engine (recursive descent)
-  jsvalidate.sqlrpgle       CLI program: reads 2 IFS files, validates
+    jsonparser_h.rpgle     prototypes/constants - JSON parser/tree API
+    jsonschema_h.rpgle      prototypes/constants - schema validator
+  jsonparser.sqlrpgle        hand-rolled recursive-descent JSON parser
+  jsonschema.sqlrpgle        the validator engine (recursive descent)
+  jsvalidate.sqlrpgle         CLI program: reads 2 IFS files, validates
 test/
   schema_person.json
   data_person_valid.json
@@ -61,13 +63,22 @@ to the JSON Schema spec's reference engine.
 
 ## Known limits
 
-- Documents up to 1 MB (`JSON_MAXDOC` in `jsonutil_h.rpgle`) - raise
+- Documents up to 1 MB (`JSON_MAXDOC` in `jsonparser_h.rpgle`) - raise
   the constant and recompile if you need more.
+- Up to 60,000 parsed nodes per document (`JSON_MAXNODES`) - each
+  value and object member is one node; deeply nested or very wide
+  documents could exhaust this.
 - Scalar values up to 32,000 characters (`JSON_MAXVAL`).
+- Numbers are parsed into `packed(31:10)` - about 21 integer digits
+  plus 10 fractional digits. Numbers needing more precision than that
+  (or outside that range) will lose precision.
 - Up to 256 properties enumerated per object, 256 chars per property
   name (`JSON_MAXKEYS`/`JSON_MAXKEYLEN`).
 - Up to 200 violations reported per run (`JS_MAXERRORS`); validation
   keeps going past that, it just stops recording new ones.
+- Malformed JSON in either the schema or the data document is
+  reported as a single violation at `$` rather than a per-token parse
+  error list.
 
 ## Building
 
@@ -77,11 +88,11 @@ use a 5250 session, an ACS "Submit job" with CL, or VS Code's Code for
 IBM i extension):
 
 ```
-CRTSQLRPGI OBJ(MYLIB/JSONUTIL)    SRCSTMF('/path/to/Rapture/src/jsonutil.sqlrpgle')    OBJTYPE(*MODULE) COMMIT(*NONE) INCDIR('/path/to/Rapture')
-CRTSQLRPGI OBJ(MYLIB/JSONSCHEMA)  SRCSTMF('/path/to/Rapture/src/jsonschema.sqlrpgle')  OBJTYPE(*MODULE) COMMIT(*NONE) INCDIR('/path/to/Rapture')
-CRTSQLRPGI OBJ(MYLIB/JSVALIDATE)  SRCSTMF('/path/to/Rapture/src/jsvalidate.sqlrpgle')  OBJTYPE(*MODULE) COMMIT(*NONE) INCDIR('/path/to/Rapture')
+CRTSQLRPGI OBJ(MYLIB/JSONPARSER) SRCSTMF('/path/to/Rapture/src/jsonparser.sqlrpgle') OBJTYPE(*MODULE) COMMIT(*NONE) INCDIR('/path/to/Rapture')
+CRTSQLRPGI OBJ(MYLIB/JSONSCHEMA) SRCSTMF('/path/to/Rapture/src/jsonschema.sqlrpgle') OBJTYPE(*MODULE) COMMIT(*NONE) INCDIR('/path/to/Rapture')
+CRTSQLRPGI OBJ(MYLIB/JSVALIDATE) SRCSTMF('/path/to/Rapture/src/jsvalidate.sqlrpgle') OBJTYPE(*MODULE) COMMIT(*NONE) INCDIR('/path/to/Rapture')
 
-CRTPGM PGM(MYLIB/JSVALIDATE) MODULE(MYLIB/JSONUTIL MYLIB/JSONSCHEMA MYLIB/JSVALIDATE) ENTMOD(MYLIB/JSVALIDATE)
+CRTPGM PGM(MYLIB/JSVALIDATE) MODULE(MYLIB/JSONPARSER MYLIB/JSONSCHEMA MYLIB/JSVALIDATE) ENTMOD(MYLIB/JSVALIDATE)
 ```
 
 (`INCDIR` is the directory the `/copy 'src/copy/...'` statements are
@@ -109,7 +120,7 @@ an IFS file, since `DSPLY` only goes to the job log.
 
 The actual reusable API is `jsonSchemaValidate` in
 `src/jsonschema.sqlrpgle` / `src/copy/jsonschema_h.rpgle` - bind your
-own program against the `JSONUTIL` and `JSONSCHEMA` modules and call:
+own program against the `JSONPARSER` and `JSONSCHEMA` modules and call:
 
 ```rpgle
 /copy 'src/copy/jsonschema_h.rpgle'
