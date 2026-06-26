@@ -2,7 +2,7 @@ import path from 'path';
 import { createApp } from './app';
 import { RouteRegistry } from '../routing/route-registry';
 import { RpgInvoker } from '../invoker/types';
-import { Db2StoredProcInvoker } from '../invoker/db2-stored-proc-invoker';
+import { IdbConnectorInvoker } from '../invoker/idb-connector-invoker';
 import { MockInvoker } from '../invoker/mock-invoker';
 
 function buildInvoker(): RpgInvoker {
@@ -11,14 +11,11 @@ function buildInvoker(): RpgInvoker {
     return new MockInvoker();
   }
 
-  const connectionString = process.env.DB2_CONNECTION_STRING;
-  if (!connectionString) {
-    throw new Error(
-      'DB2_CONNECTION_STRING is required when INVOKER_MODE=db2 ' +
-        '(e.g. "DSN=IBMI;UID=user;PWD=secret" or a full ODBC connection string)',
-    );
-  }
-  return new Db2StoredProcInvoker({ connectionString });
+  // '*LOCAL' connects to the Db2 for i database on the same IBM i partition
+  // this process is running on (the expected deployment: Node in PASE,
+  // fronted by IBM HTTP Server / Apache as a reverse proxy).
+  const connectionUrl = process.env.IDB_CONNECTION_URL ?? '*LOCAL';
+  return new IdbConnectorInvoker(connectionUrl);
 }
 
 function main(): void {
